@@ -14,7 +14,8 @@ class AddGrubPackage(Task):
 
     @classmethod
     def run(cls, info):
-        info.packages.add('grub-pc')
+        grub_pkg_arch = {'i386': 'grub-pc', 'amd64': 'grub-pc', 'arm64': 'grub-efi-arm64'}[info.manifest.system['architecture']]
+        info.packages.add(grub_pkg_arch)
 
 
 class InitGrubConfig(Task):
