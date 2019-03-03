@@ -1,5 +1,6 @@
 from bootstrapvz.base.fs.volume import Volume
 from bootstrapvz.base.fs.exceptions import VolumeError
+from bootstrapvz.common.tools import log_check_call
 
 
 class EBSVolume(Volume):
@@ -39,17 +40,47 @@ class EBSVolume(Volume):
     def _before_attach(self, e):
         import os.path
         import string
+        import urllib2
+
+        def name_mapped(path):
+            return path.split('/')[-1].replace('xvd', 'sd')[:3]
 
         self.instance_id = e.instance_id
-        for letter in string.ascii_lowercase[5:]:
-            dev_path = os.path.join('/dev', 'xvd' + letter)
-            if not os.path.exists(dev_path):
-                self.device_path = dev_path
-                self.ec2_device_path = os.path.join('/dev', 'sd' + letter)
+
+        dev_map_names = set()
+        launch_map_url = 'http://169.254.169.254/latest/meta-data/block-device-mapping/'
+        launch_map_response = urllib2.urlopen(url=launch_map_url, timeout=5)
+        for map_name in [d.strip() for d in launch_map_response.readlines()]:
+            dev_url = launch_map_url + map_name
+            dev_response = urllib2.urlopen(url=dev_url, timeout=5)
+            dev_map_names.add(name_mapped(dev_response.read().strip()))
+
+        try:
+            instance = self.conn.describe_instances(
+                Filters=[
+                    {'Name': 'instance-id', 'Values': [self.instance_id]}
+                ]
+            )['Reservations'][0]['Instances'][0]
+        except (IndexError, KeyError):
+            raise VolumeError('Unable to fetch EC2 instance volume data')
+
+        for mapped_dev in instance.get('BlockDeviceMappings', list()):
+            dev_map_names.add(name_mapped(mapped_dev['DeviceName']))
+
+        for letter in reversed(string.ascii_lowercase[1:]):
+            if 'sd' + letter not in dev_map_names:
+                self.ec2_device_path = '/dev/sd' + letter
                 break
 
-        if self.device_path is None:
-            raise VolumeError('Unable to find a free block device path for mounting the bootstrap volume')
+        if self.ec2_device_path is None:
+            raise VolumeError('Unable to find a free block device mapping for bootstrap volume')
+
+        self.device_path = None
+
+        lsblk_command = ['lsblk', '--noheadings', '--list', '--nodeps', '--output', 'NAME']
+
+        lsblk_start = log_check_call(lsblk_command)
+        start_dev_names = set(lsblk_start)
 
         self.conn.attach_volume(VolumeId=self.vol_id,
                                 InstanceId=self.instance_id,
@@ -57,6 +88,23 @@ class EBSVolume(Volume):
         waiter = self.conn.get_waiter('volume_in_use')
         waiter.wait(VolumeIds=[self.vol_id],
                     Filters=[{'Name': 'attachment.status', 'Values': ['attached']}])
+
+        log_check_call(['udevadm', 'settle'])
+
+        lsblk_end = log_check_call(lsblk_command)
+        end_dev_names = set(lsblk_end)
+
+        if len(start_dev_names ^ end_dev_names) != 1:
+            raise VolumeError('Could not determine the device name for bootstrap volume')
+
+        udev_name = (start_dev_names ^ end_dev_names).pop()
+        udev_path = log_check_call(['udevadm', 'info',
+                                    '--root', '--query=name', '--name',
+                                    udev_name])
+        if len(udev_path) != 1 or not os.path.exists(udev_path[0]):
+            raise VolumeError('Could not find device path for bootstrap volume')
+
+        self.device_path = udev_path[0]
 
     def _before_detach(self, e):
         self.conn.detach_volume(VolumeId=self.vol_id,
