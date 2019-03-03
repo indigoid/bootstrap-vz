@@ -66,6 +66,7 @@ class PackageList(object):
         :raises PackageError: When a package of the same name but with a different target has already been added.
         :raises PackageError: When the specified target release could not be found.
         """
+        print "adding package: {Package}".format(Package=name)
         from exceptions import PackageError
         name = name.format(**self.manifest_vars)
         if target is not None:
