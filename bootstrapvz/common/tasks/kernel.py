@@ -11,7 +11,7 @@ class AddDKMSPackages(Task):
     @classmethod
     def run(cls, info):
         info.packages.add('dkms')
-        kernel_pkg_arch = {'i386': '686-pae', 'amd64': 'amd64'}[info.manifest.system['architecture']]
+        kernel_pkg_arch = {'i386': '686-pae', 'amd64': 'amd64', 'arm64': 'arm64'}[info.manifest.system['architecture']]
         info.packages.add('linux-headers-' + kernel_pkg_arch)
 
 
